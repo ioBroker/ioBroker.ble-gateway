@@ -1,0 +1,81 @@
+{
+    "i18n": true,
+    "type": "tabs",
+    "items": {
+        "_main": {
+            "type": "panel",
+            "label": "Main settings",
+            "items": {
+                "hciDevice": {
+                    "type": "selectSendTo",
+                    "command": "listHciAdapters",
+                    "manual": true,
+                    "xs": 12,
+                    "sm": 6,
+                    "md": 4,
+                    "lg": 4,
+                    "xl": 4,
+                    "default": "",
+                    "label": "Bluetooth adapter",
+                    "help": "Selects the Bluetooth controller by MAC address (BD_ADDR). MAC is stable across reboots, hciX numbering is not."
+                },
+                "scanDurationMs": {
+                    "newLine": true,
+                    "type": "number",
+                    "min": 1000,
+                    "max": 60000,
+                    "step": 500,
+                    "xs": 12,
+                    "sm": 6,
+                    "md": 3,
+                    "lg": 3,
+                    "xl": 3,
+                    "default": 8000,
+                    "label": "Diagnostic scan duration (ms)",
+                    "help": "How long the diagnostic scan (button below) should run."
+                },
+                "_info": {
+                    "newLine": true,
+                    "type": "staticText",
+                    "xs": 12,
+                    "sm": 12,
+                    "md": 12,
+                    "lg": 12,
+                    "xl": 12,
+                    "text": "This gateway owns the Bluetooth controller and shares BLE advertisement packets with other adapters. No controller is opened until at least one adapter subscribes."
+                }
+            }
+        },
+        "_diagnostics": {
+            "type": "panel",
+            "label": "Diagnostics",
+            "items": {
+                "_scan": {
+                    "type": "sendTo",
+                    "command": "scan",
+                    "jsonData": "{ \"duration\": ${data.scanDurationMs}, \"hciDevice\": \"${data.hciDevice}\" }",
+                    "variant": "contained",
+                    "xs": 12,
+                    "sm": 12,
+                    "md": 4,
+                    "lg": 4,
+                    "xl": 4,
+                    "label": "Scan for BLE devices",
+                    "help": "Runs a one-shot BLE scan via the configured controller and lists nearby devices. Does not change subscriptions."
+                },
+                "_status": {
+                    "type": "sendTo",
+                    "command": "getStatus",
+                    "variant": "outlined",
+                    "xs": 12,
+                    "sm": 12,
+                    "md": 4,
+                    "lg": 4,
+                    "xl": 4,
+                    "label": "Show status",
+                    "help": "Shows the current controller state and active subscriptions."
+                }
+            }
+        }
+    }
+}

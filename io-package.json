@@ -1,0 +1,148 @@
+{
+  "common": {
+    "name": "ble-gateway",
+    "version": "0.0.1",
+    "news": {
+      "0.0.1": {
+        "en": "initial release",
+        "de": "Erstveröffentlichung",
+        "ru": "первый релиз",
+        "pt": "lançamento inicial",
+        "nl": "eerste release",
+        "fr": "première version",
+        "it": "rilascio iniziale",
+        "es": "lanzamiento inicial",
+        "pl": "pierwsze wydanie",
+        "uk": "первый релиз",
+        "zh-cn": "初始版本"
+      }
+    },
+    "titleLang": {
+      "en": "BLE Gateway",
+      "de": "BLE-Gateway",
+      "ru": "BLE-шлюз",
+      "pt": "Gateway BLE",
+      "nl": "BLE-gateway",
+      "fr": "Passerelle BLE",
+      "it": "Gateway BLE",
+      "es": "Puerta de enlace BLE",
+      "pl": "Brama BLE",
+      "uk": "BLE-шлюз",
+      "zh-cn": "BLE 网关"
+    },
+    "desc": {
+      "en": "Central BLE gateway: owns the Bluetooth controller and shares advertisement packets with other adapters via messages",
+      "de": "Zentrales BLE-Gateway: besitzt den Bluetooth-Controller und teilt Advertisement-Pakete per Message mit anderen Adaptern",
+      "ru": "Центральный BLE-шлюз: владеет Bluetooth-контроллером и делится пакетами объявлений с другими адаптерами через сообщения",
+      "pt": "Gateway BLE central: detém o controlador Bluetooth e partilha pacotes de advertising com outros adaptadores via mensagens",
+      "nl": "Centrale BLE-gateway: bezit de Bluetooth-controller en deelt advertisement-pakketten met andere adapters via berichten",
+      "fr": "Passerelle BLE centrale : possède le contrôleur Bluetooth et partage les paquets d'advertising avec d'autres adaptateurs via des messages",
+      "it": "Gateway BLE centrale: possiede il controller Bluetooth e condivide i pacchetti di advertising con altri adattatori tramite messaggi",
+      "es": "Puerta de enlace BLE central: posee el controlador Bluetooth y comparte paquetes de advertising con otros adaptadores mediante mensajes",
+      "pl": "Centralna brama BLE: posiada kontroler Bluetooth i udostępnia pakiety advertisingu innym adapterom przez wiadomości",
+      "uk": "Центральний BLE-шлюз: володіє Bluetooth-контролером і ділиться пакетами оголошень з іншими адаптерами через повідомлення",
+      "zh-cn": "中央 BLE 网关：占用蓝牙控制器并通过消息与其他适配器共享广播数据包"
+    },
+    "authors": [
+      "bluefox <dogafox@gmail.com>"
+    ],
+    "keywords": [
+      "ble",
+      "bluetooth",
+      "gateway",
+      "advertisement",
+      "scanner",
+      "hci"
+    ],
+    "licenseInformation": {
+      "type": "free",
+      "license": "MIT"
+    },
+    "platform": "Javascript/Node.js",
+    "icon": "ble-gateway.png",
+    "enabled": true,
+    "extIcon": "https://raw.githubusercontent.com/ioBroker/ioBroker.ble-gateway/master/admin/ble-gateway.png",
+    "readme": "https://github.com/ioBroker/ioBroker.ble-gateway/blob/master/README.md",
+    "loglevel": "info",
+    "mode": "daemon",
+    "type": "hardware",
+    "adminUI": {
+      "config": "json"
+    },
+    "compact": true,
+    "messagebox": true,
+    "tier": 3,
+    "dependencies": [
+      {
+        "js-controller": ">=6.0.11"
+      }
+    ],
+    "globalDependencies": [
+      {
+        "admin": ">=7.6.20"
+      }
+    ],
+    "osDependencies": {
+      "linux": [
+        "bluez",
+        "libbluetooth-dev"
+      ]
+    },
+    "connectionType": "local",
+    "dataSource": "poll"
+  },
+  "native": {
+    "hciDevice": "",
+    "scanDurationMs": 8000
+  },
+  "objects": [],
+  "instanceObjects": [
+    {
+      "_id": "info",
+      "type": "channel",
+      "common": {
+        "name": "Information"
+      },
+      "native": {}
+    },
+    {
+      "_id": "info.connection",
+      "type": "state",
+      "common": {
+        "role": "indicator.connected",
+        "name": "Controller open and scanning",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    },
+    {
+      "_id": "info.subscribers",
+      "type": "state",
+      "common": {
+        "role": "value",
+        "name": "Number of subscribed adapters",
+        "type": "number",
+        "read": true,
+        "write": false,
+        "def": 0
+      },
+      "native": {}
+    },
+    {
+      "_id": "info.subscriptions",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Active subscriptions",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "[]"
+      },
+      "native": {}
+    }
+  ]
+}

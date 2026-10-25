@@ -83,7 +83,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'copilot-setup,automation'
+              labels: 'automation'
             });
             
             const setupIssues = issues.filter(issue => 

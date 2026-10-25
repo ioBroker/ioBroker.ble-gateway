@@ -131,6 +131,7 @@ class MyAdapter extends Adapter {
 -->
 ### **WORK IN PROGRESS**
 * (@GermanBluefox) Initial version — passive advertisement gateway with message-based subscribe/unsubscribe.
+* (GermanBluefox) Replaced the telegram project context in the Copilot instructions and fixed the duplicate-issue check of the Copilot template workflow (#51)
 
 ## License
 

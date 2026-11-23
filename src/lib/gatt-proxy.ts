@@ -219,10 +219,22 @@ export class GattProxy {
         peripheral: any,
         connectMs: number,
     ): Promise<GattConnectResult> {
-        this.host.log.debug(`gatt: ${owner} connecting ${address}...`);
-        await withTimeout(Promise.resolve(peripheral.connectAsync()), connectMs, `Connect timeout for ${address}`, () =>
-            peripheral.cancelConnect?.(),
-        );
+        if (peripheral.state === 'connected') {
+            // No connection of ours uses this address (connect() checked that),
+            // yet noble holds a link: the controller reported an earlier
+            // connect as failed (e.g. HCI 0x02) and completed it a moment
+            // later, and noble adopted it. Use that link — connecting again
+            // would only fail with "Peripheral already connected".
+            this.host.log.debug(`gatt: ${owner} takes over the open link to ${address}`);
+        } else {
+            this.host.log.debug(`gatt: ${owner} connecting ${address}...`);
+            await withTimeout(
+                Promise.resolve(peripheral.connectAsync()),
+                connectMs,
+                `Connect timeout for ${address}`,
+                () => peripheral.cancelConnect?.(),
+            );
+        }
 
         let discovered: { characteristics?: any[] };
         try {

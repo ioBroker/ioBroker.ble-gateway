@@ -190,6 +190,9 @@ try {
    Placeholder for the next version (at the beginning of the line):
    ### **WORK IN PROGRESS**
 -->
+### **WORK IN PROGRESS**
+* (@GermanBluefox) Updated packages
+
 ### 0.1.1 (2026-11-23)
 * (@GermanBluefox) Corrected the translations of the 0.1.0 release notes; releases are published to npm with trusted publishing now.
 

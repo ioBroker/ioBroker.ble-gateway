@@ -23,6 +23,7 @@ export interface HciInfo {
 interface HciSocketLike {
     on(event: 'data', cb: (data: Buffer) => void): void;
     on(event: 'error', cb: (err: Error) => void): void;
+    removeAllListeners(): void;
     bindRaw(devId: number): number;
     setFilter(filter: Buffer): void;
     start(): void;
@@ -94,9 +95,21 @@ function sanitizeName(raw: Buffer): string {
     return text.slice(0, end).trim();
 }
 
+// Workaround for a bug in @stoprocent/bluetooth-hci-socket (<= 2.3.0): after
+// stop() the polling thread close()s the fd, but the native object keeps the
+// fd number and close()s it AGAIN in its destructor when the JS wrapper is
+// garbage-collected. By then the kernel has usually handed that fd number to a
+// newer socket (the next probe, or noble's own HCI socket), which then gets
+// closed under its feet: the next probe sees no response, readHciInfos()
+// returns [] and a configured MAC can't be resolved. Keeping every started
+// socket reachable means its destructor never runs. Each one is a few bytes
+// (its fd is already closed), and probes only run on demand.
+const startedSockets: HciSocketLike[] = [];
+
 function probe(Ctor: HciSocketCtor, devId: number, timeoutMs: number): Promise<HciInfo | null> {
     return new Promise(resolve => {
         const s = new Ctor();
+        startedSockets.push(s);
         let address: string | null = null;
         let name: string | null = null;
         let done = false;
@@ -115,6 +128,11 @@ function probe(Ctor: HciSocketCtor, devId: number, timeoutMs: number): Promise<H
             } catch {
                 // ignore
             }
+            // Drop the closures so the retained socket holds nothing else.
+            s.removeAllListeners();
+            s.on('error', () => {
+                // ignore late errors from the stopped socket
+            });
             resolve(result);
         };
         timer = setTimeout(() => {
@@ -154,7 +172,21 @@ function probe(Ctor: HciSocketCtor, devId: number, timeoutMs: number): Promise<H
     });
 }
 
-export async function readHciInfos(timeoutMs = 1500): Promise<HciInfo[]> {
+// Concurrent callers (admin dropdown, several subscribe messages at once)
+// share one probe run instead of opening parallel raw sockets on the same
+// controller.
+let inflight: Promise<HciInfo[]> | null = null;
+
+export function readHciInfos(timeoutMs = 1500): Promise<HciInfo[]> {
+    if (!inflight) {
+        inflight = doReadHciInfos(timeoutMs).finally(() => {
+            inflight = null;
+        });
+    }
+    return inflight;
+}
+
+async function doReadHciInfos(timeoutMs: number): Promise<HciInfo[]> {
     const Ctor = loadHciSocket();
     if (!Ctor) {
         return [];

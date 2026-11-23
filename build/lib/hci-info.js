@@ -67,9 +67,20 @@ function sanitizeName(raw) {
     }
     return text.slice(0, end).trim();
 }
+// Workaround for a bug in @stoprocent/bluetooth-hci-socket (<= 2.3.0): after
+// stop() the polling thread close()s the fd, but the native object keeps the
+// fd number and close()s it AGAIN in its destructor when the JS wrapper is
+// garbage-collected. By then the kernel has usually handed that fd number to a
+// newer socket (the next probe, or noble's own HCI socket), which then gets
+// closed under its feet: the next probe sees no response, readHciInfos()
+// returns [] and a configured MAC can't be resolved. Keeping every started
+// socket reachable means its destructor never runs. Each one is a few bytes
+// (its fd is already closed), and probes only run on demand.
+const startedSockets = [];
 function probe(Ctor, devId, timeoutMs) {
     return new Promise(resolve => {
         const s = new Ctor();
+        startedSockets.push(s);
         let address = null;
         let name = null;
         let done = false;
@@ -88,6 +99,11 @@ function probe(Ctor, devId, timeoutMs) {
             catch {
                 // ignore
             }
+            // Drop the closures so the retained socket holds nothing else.
+            s.removeAllListeners();
+            s.on('error', () => {
+                // ignore late errors from the stopped socket
+            });
             resolve(result);
         };
         timer = setTimeout(() => {
@@ -126,7 +142,19 @@ function probe(Ctor, devId, timeoutMs) {
         }
     });
 }
-async function readHciInfos(timeoutMs = 1500) {
+// Concurrent callers (admin dropdown, several subscribe messages at once)
+// share one probe run instead of opening parallel raw sockets on the same
+// controller.
+let inflight = null;
+function readHciInfos(timeoutMs = 1500) {
+    if (!inflight) {
+        inflight = doReadHciInfos(timeoutMs).finally(() => {
+            inflight = null;
+        });
+    }
+    return inflight;
+}
+async function doReadHciInfos(timeoutMs) {
     const Ctor = loadHciSocket();
     if (!Ctor) {
         return [];

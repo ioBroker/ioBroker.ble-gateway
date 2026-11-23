@@ -62,6 +62,79 @@ export interface UnsubscribePayload {
     subscriptionId?: string;
 }
 
+// ---- GATT proxy -------------------------------------------------------------
+// Binary values travel as HEX strings, UUIDs in short/normalized form ("fff1").
+
+/** Payload of `gattConnect`. The device must advertise within `discoverTimeoutMs`. */
+export interface GattConnectPayload {
+    /** MAC of the device, e.g. "c0:d6:3c:58:19:ba". */
+    address: string;
+    /** How long to wait for an advertisement of the device (default 15000, max 60000). */
+    discoverTimeoutMs?: number;
+    /** How long to wait for the link (default 15000, max 60000). */
+    connectTimeoutMs?: number;
+}
+
+export interface GattCharacteristicInfo {
+    serviceUuid: string;
+    uuid: string;
+    /** noble properties, e.g. ["read", "write", "notify"]. */
+    properties: string[];
+}
+
+/** Answer of `gattConnect`. */
+export interface GattConnectResult {
+    connectionId: string;
+    address: string;
+    characteristics: GattCharacteristicInfo[];
+}
+
+/** Payload of `gattSubscribe`, `gattUnsubscribe`, `gattRead`. */
+export interface GattCharPayload {
+    connectionId: string;
+    /** Characteristic UUID, short or long form. */
+    characteristic: string;
+    /** Service UUID — only needed when the characteristic UUID exists in several services. */
+    service?: string;
+}
+
+/** Payload of `gattWrite`. */
+export interface GattWritePayload extends GattCharPayload {
+    /** HEX string. */
+    data: string;
+    /** Write command (no response) instead of write request. */
+    withoutResponse?: boolean;
+}
+
+/** Payload of `gattDisconnect`. */
+export interface GattDisconnectPayload {
+    connectionId: string;
+}
+
+/** Pushed to the owner on every notification: `sendTo(owner, 'gattNotify', …)`. */
+export interface GattNotifyMessage {
+    connectionId: string;
+    service: string;
+    characteristic: string;
+    /** HEX string. */
+    data: string;
+}
+
+/** Pushed to the owner when the link drops without a `gattDisconnect`. */
+export interface GattDisconnectedMessage {
+    connectionId: string;
+    address: string;
+    reason: string;
+}
+
+/** One open GATT connection, as listed by `getStatus`. */
+export interface GattConnectionInfo {
+    connectionId: string;
+    owner: string;
+    address: string;
+    since: number;
+}
+
 /** Info about the active HCI controller, returned on subscribe/getStatus. */
 export interface ControllerInfo {
     hciId: number;

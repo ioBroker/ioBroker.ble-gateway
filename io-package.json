@@ -143,6 +143,19 @@
         "def": "[]"
       },
       "native": {}
+    },
+    {
+      "_id": "info.connections",
+      "type": "state",
+      "common": {
+        "role": "value",
+        "name": "Open GATT connections",
+        "type": "number",
+        "read": true,
+        "write": false,
+        "def": 0
+      },
+      "native": {}
     }
   ]
 }

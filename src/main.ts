@@ -1,16 +1,22 @@
-import { Adapter, type AdapterOptions } from '@iobroker/adapter-core';
+import { Adapter, EXIT_CODES, type AdapterOptions } from '@iobroker/adapter-core';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import type {
     BleFilter,
     BleGatewayAdapterConfig,
     BlePacket,
     ControllerInfo,
+    GattCharPayload,
+    GattConnectPayload,
+    GattDisconnectPayload,
+    GattWritePayload,
     SubscribePayload,
     Subscription,
     UnsubscribePayload,
 } from './types';
 import { BleScanner, type Advertisement } from './lib/scanner';
 import { readHciInfos } from './lib/hci-info';
+import { GattProxy } from './lib/gatt-proxy';
+import { normalizeUuid } from './lib/uuid';
 
 interface HciAdapterInfo {
     value: number | string;
@@ -25,6 +31,20 @@ interface HciAdapterEntry {
 const MAC_RE = /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/i;
 const ALIVE_PREFIX = 'system.adapter.';
 const ALIVE_SUFFIX = '.alive';
+// A peripheral seen this recently can be connected without scanning for it first.
+const PERIPHERAL_FRESH_MS = 30000;
+// A running scan without a single advertisement for this long is restarted.
+const SCAN_SILENCE_MS = 60000;
+// A controller that stays lost this long makes the adapter restart itself.
+const POWER_LOSS_RESTART_MS = 15000;
+const GATT_COMMANDS = new Set([
+    'gattConnect',
+    'gattSubscribe',
+    'gattUnsubscribe',
+    'gattWrite',
+    'gattRead',
+    'gattDisconnect',
+]);
 
 function readSysFile(path: string): string {
     try {
@@ -72,9 +92,20 @@ async function readHciAdapters(): Promise<HciAdapterEntry[]> {
 async function resolveHciId(value: number | string | undefined): Promise<number> {
     if (typeof value === 'string' && MAC_RE.test(value.trim())) {
         const wanted = value.trim().toUpperCase();
-        const adapters = await readHciAdapters();
-        const match = adapters.find(a => a.address === wanted);
-        return match ? match.id : -1;
+        // The HCI probe can come back empty on a transient failure (no
+        // Command Complete within the timeout); the sysfs fallback then has no
+        // MACs on recent kernels. Probe once more before giving up.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const adapters = await readHciAdapters();
+            const match = adapters.find(a => a.address === wanted);
+            if (match) {
+                return match.id;
+            }
+            if (attempt === 0) {
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+        return -1;
     }
     const n = parseInt(value as string, 10);
     return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -140,16 +171,6 @@ async function listHciAdapters(): Promise<HciAdapterInfo[]> {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
-// Reduce a Bluetooth UUID to a comparable canonical form: lowercase hex without
-// separators, with the 128-bit base UUID collapsed to its 16-bit short form.
-function normalizeUuid(u: string): string {
-    const s = (u || '').toLowerCase().replace(/[^0-9a-f]/g, '');
-    if (s.length === 32 && s.startsWith('0000') && s.endsWith('00001000800000805f9b34fb')) {
-        return s.slice(4, 8);
-    }
-    return s;
-}
-
 function parsePrefixes(raw: string | undefined): string[] {
     if (!raw) {
         return [];
@@ -186,7 +207,14 @@ class BleGatewayAdapter extends Adapter {
     private noble: any = null;
     private scanner: BleScanner | null = null;
     private currentHci = -1;
+    // Pending wait for noble's `poweredOn`, shared by concurrent ensureNoble() callers.
+    private poweringOn: Promise<void> | null = null;
     private stopping = false;
+    // Recovery of a lost controller (see handlePowerState).
+    private wasPoweredOn = false;
+    private powerLossTimer: NodeJS.Timeout | null = null;
+    private sawAdvertisement = false;
+    private scanRestartedAt = 0;
 
     // key = `${subscriberId}::${subscriptionId}`
     private subscriptions: Map<string, Subscription> = new Map();
@@ -194,6 +222,15 @@ class BleGatewayAdapter extends Adapter {
     private watchedAlive: Set<string> = new Set();
     // Active diagnostic-scan collector (admin "scan" button); null when idle.
     private diag: Map<string, { address: string; localName: string; rssi: number }> | null = null;
+
+    // GATT connections on behalf of other instances.
+    private readonly gatt: GattProxy;
+    // Last noble peripheral object and time seen, per lowercased MAC (for gattConnect).
+    private readonly peripherals = new Map<string, { peripheral: any; lastSeen: number }>();
+    // gattConnect calls waiting for a device to advertise, per lowercased MAC.
+    private readonly discoveries = new Map<string, Set<(peripheral: any) => void>>();
+    private pruneTimer: NodeJS.Timeout | null = null;
+    private scanSilenceWarned = false;
 
     public constructor(options: Partial<AdapterOptions> = {}) {
         super({
@@ -204,12 +241,31 @@ class BleGatewayAdapter extends Adapter {
             stateChange: (id, state) => this.onStateChange(id, state),
             ready: () => this.onReady(),
         });
+        this.gatt = new GattProxy({
+            // this.log is only set once the adapter has connected — resolve it per call.
+            log: {
+                info: m => this.log.info(m),
+                warn: m => this.log.warn(m),
+                error: m => this.log.error(m),
+                debug: m => this.log.debug(m),
+            },
+            findPeripheral: (address, timeoutMs) => this.findPeripheral(address, timeoutMs),
+            suspendScan: () => this.scanner?.suspend() ?? Promise.resolve(),
+            resumeScan: () => this.scanner?.resume() ?? Promise.resolve(),
+            send: (instance, command, message) => this.sendTo(instance, command, message),
+            onChange: () => {
+                if (!this.stopping) {
+                    void this.setStateAsync('info.connections', this.gatt.size, true).catch(() => undefined);
+                }
+            },
+        });
     }
 
     private async onReady(): Promise<void> {
         await this.setStateAsync('info.connection', false, true);
         await this.setStateAsync('info.subscribers', 0, true);
         await this.setStateAsync('info.subscriptions', '[]', true);
+        await this.setStateAsync('info.connections', 0, true);
 
         if (process.platform !== 'linux' && process.platform !== 'darwin') {
             this.log.warn(
@@ -224,6 +280,14 @@ class BleGatewayAdapter extends Adapter {
 
     private onUnload(cb: () => void): void {
         this.stopping = true;
+        if (this.pruneTimer) {
+            clearInterval(this.pruneTimer);
+            this.pruneTimer = null;
+        }
+        if (this.powerLossTimer) {
+            clearTimeout(this.powerLossTimer);
+            this.powerLossTimer = null;
+        }
         const finish = (): void => {
             try {
                 cb();
@@ -231,34 +295,45 @@ class BleGatewayAdapter extends Adapter {
                 // ignore
             }
         };
-        if (this.scanner) {
-            void this.scanner.stop().finally(finish);
-        } else {
-            finish();
-        }
+        // Stop the scan first, so the GATT pause ending in disconnectAll() does not restart it.
+        void Promise.resolve(this.scanner?.stop())
+            .catch(() => undefined)
+            .then(() => this.gatt.disconnectAll())
+            .catch(() => undefined)
+            .finally(finish);
     }
 
     private onStateChange(id: string, state: ioBroker.State | null | undefined): void {
         if (!id.startsWith(ALIVE_PREFIX) || !id.endsWith(ALIVE_SUFFIX)) {
             return;
         }
-        const subscriberId = id.slice(ALIVE_PREFIX.length, id.length - ALIVE_SUFFIX.length);
-        // alive removed (null) or turned false → the subscriber is gone.
+        const clientId = id.slice(ALIVE_PREFIX.length, id.length - ALIVE_SUFFIX.length);
+        // alive removed (null) or turned false → the client is gone.
         if (!state || state.val === false) {
-            if (this.hasSubscriber(subscriberId)) {
-                this.log.info(`Subscriber ${subscriberId} is no longer alive — dropping its subscriptions`);
-                void this.removeSubscriptionsFor(subscriberId);
-            }
+            void this.dropClient(clientId);
         }
+    }
+
+    // Forget everything an instance had: subscriptions and GATT connections.
+    private async dropClient(clientId: string): Promise<void> {
+        if (this.hasSubscriber(clientId)) {
+            this.log.info(`Subscriber ${clientId} is no longer alive — dropping its subscriptions`);
+            await this.removeSubscriptionsFor(clientId);
+        }
+        const closed = await this.gatt.dropOwner(clientId);
+        if (closed) {
+            this.log.info(`${clientId} is no longer alive — closed its ${closed} GATT connection(s)`);
+        }
+        await this.maybeUnwatch(clientId);
     }
 
     // ---- noble / scanner lifecycle ---------------------------------------
 
+    // Create noble for `hciId` (once per process) and wait until the controller
+    // is powered on. Safe to call concurrently: every caller resolves only after
+    // `poweredOn`, not merely after the noble instance exists.
     private async ensureNoble(hciId: number): Promise<void> {
-        if (this.noble && this.currentHci === hciId) {
-            return;
-        }
-        if (this.noble) {
+        if (this.noble && this.currentHci !== hciId) {
             // The @stoprocent/noble HCI binding holds native socket state that
             // cannot be cleanly reset in-process. Switching controllers requires
             // a process restart.
@@ -267,41 +342,142 @@ class BleGatewayAdapter extends Adapter {
             );
         }
 
-        process.env.NOBLE_HCI_DEVICE_ID = String(hciId);
-        const nobleModule = require('@stoprocent/noble');
-        try {
-            this.noble = nobleModule.withBindings('hci', { deviceId: hciId });
-        } catch {
-            this.noble = nobleModule.withBindings ? nobleModule.withBindings('hci') : nobleModule;
+        if (!this.noble) {
+            process.env.NOBLE_HCI_DEVICE_ID = String(hciId);
+            const nobleModule = require('@stoprocent/noble');
+            try {
+                this.noble = nobleModule.withBindings('hci', { deviceId: hciId });
+            } catch {
+                this.noble = nobleModule.withBindings ? nobleModule.withBindings('hci') : nobleModule;
+            }
+            this.currentHci = hciId;
+            this.noble.on?.('stateChange', (state: string) => this.handlePowerState(state));
+            this.scanner = new BleScanner(this.noble, {
+                info: m => this.log.info(m),
+                warn: m => this.log.warn(m),
+                error: m => this.log.error(m),
+                debug: m => this.log.debug(m),
+            });
+            // Forget peripherals not seen for a while (random addresses rotate,
+            // so the cache would otherwise grow forever).
+            this.pruneTimer = setInterval(() => {
+                const limit = Date.now() - 2 * PERIPHERAL_FRESH_MS;
+                for (const [address, entry] of this.peripherals) {
+                    if (entry.lastSeen < limit) {
+                        this.peripherals.delete(address);
+                    }
+                }
+                this.checkScanAlive();
+            }, PERIPHERAL_FRESH_MS);
         }
-        this.currentHci = hciId;
-        this.scanner = new BleScanner(this.noble, {
-            info: m => this.log.info(m),
-            warn: m => this.log.warn(m),
-            error: m => this.log.error(m),
-            debug: m => this.log.debug(m),
-        });
-        await this.scanner.waitPoweredOn(15000);
-        this.log.info(`Bluetooth controller hci${hciId} powered on`);
+
+        const scanner = this.scanner!;
+        if (scanner.isPoweredOn()) {
+            return;
+        }
+        // Not (or no longer) powered on: wait. A failed wait is not cached, so
+        // the next caller waits again instead of passing an unpowered controller.
+        if (!this.poweringOn) {
+            this.poweringOn = scanner
+                .waitPoweredOn(15000)
+                .then(() => this.log.info(`Bluetooth controller hci${hciId} powered on`))
+                .finally(() => {
+                    this.poweringOn = null;
+                });
+        }
+        await this.poweringOn;
     }
 
     // Start scanning if not already running. Caller must have called ensureNoble.
+    // No isScanning() shortcut here: a stop may still be queued in the scanner,
+    // and start() is a no-op anyway when the scan is already running.
     private async ensureScanning(): Promise<void> {
         if (!this.scanner) {
             throw new Error('BLE not initialised');
         }
-        if (this.scanner.isScanning()) {
-            return;
-        }
-        await this.scanner.start(adv => this.handleAdvertisement(adv));
+        await this.scanner.start((adv, peripheral) => this.handleAdvertisement(adv, peripheral));
     }
 
-    // Stop scanning when nothing needs the controller any more.
+    // Anything that needs advertisements right now: subscribers, the
+    // diagnostic scan, or a gattConnect waiting for its device to show up.
+    private needsScan(): boolean {
+        return this.subscriptions.size > 0 || !!this.diag || this.discoveries.size > 0;
+    }
+
+    // Stop scanning when nothing needs the controller any more. Not gated on
+    // isScanning(): a start may still be pending, and stop() is queued behind it.
     private async maybeStopScanning(): Promise<void> {
-        if (this.subscriptions.size === 0 && !this.diag && this.scanner?.isScanning()) {
+        if (!this.needsScan() && this.scanner) {
             await this.scanner.stop();
             await this.setStateAsync('info.connection', false, true);
         }
+    }
+
+    // Resolve the configured (or given) controller to its current hciX id.
+    private async resolveController(value: number | string | undefined = this.config.hciDevice): Promise<number> {
+        // Once noble runs on the configured controller, do not probe the HCI
+        // devices again: the probe opens raw sockets next to noble's and takes
+        // ~2 s — too much for every gattConnect and subscribe.
+        if (this.noble && this.currentHci >= 0 && String(value) === String(this.config.hciDevice)) {
+            return this.currentHci;
+        }
+        const hci = await resolveHciId(value);
+        if (hci < 0) {
+            const adapters = await readHciAdapters();
+            throw new Error(
+                `Configured controller ${String(value)} not present. ` +
+                    `Available: ${adapters.map(a => `hci${a.id}=${a.address || '?'}`).join(', ') || 'none'}`,
+            );
+        }
+        return hci;
+    }
+
+    // Resolve the controller and make sure noble runs (powered on) on it.
+    private async openController(value?: number | string): Promise<number> {
+        const hci = await this.resolveController(value);
+        await this.ensureNoble(hci);
+        return hci;
+    }
+
+    // The noble peripheral for a MAC: from the cache if seen recently, otherwise
+    // scan until the device advertises (or the timeout hits).
+    private findPeripheral(address: string, timeoutMs: number): Promise<any> {
+        const cached = this.peripherals.get(address);
+        if (cached && Date.now() - cached.lastSeen < PERIPHERAL_FRESH_MS) {
+            return Promise.resolve(cached.peripheral);
+        }
+        return new Promise((resolve, reject) => {
+            let waiters = this.discoveries.get(address);
+            if (!waiters) {
+                waiters = new Set();
+                this.discoveries.set(address, waiters);
+            }
+            const own: { timer?: NodeJS.Timeout; waiter?: (peripheral: any) => void } = {};
+            const done = (): void => {
+                clearTimeout(own.timer);
+                if (own.waiter) {
+                    waiters.delete(own.waiter);
+                }
+                if (!waiters.size && this.discoveries.get(address) === waiters) {
+                    this.discoveries.delete(address);
+                }
+                // Drop the scan again if only this discovery wanted it.
+                void this.maybeStopScanning().catch(() => undefined);
+            };
+            own.waiter = (peripheral: any): void => {
+                done();
+                resolve(peripheral);
+            };
+            own.timer = setTimeout(() => {
+                done();
+                reject(new Error(`${address} not seen within ${timeoutMs} ms`));
+            }, timeoutMs);
+            waiters.add(own.waiter);
+            this.ensureScanning().catch(e => {
+                done();
+                reject(e instanceof Error ? e : new Error(String(e)));
+            });
+        });
     }
 
     // ---- subscriptions ----------------------------------------------------
@@ -327,6 +503,13 @@ class BleGatewayAdapter extends Adapter {
         }
     }
 
+    // Stop watching an instance once it has neither subscriptions nor GATT connections.
+    private async maybeUnwatch(clientId: string): Promise<void> {
+        if (!this.hasSubscriber(clientId) && !this.gatt.hasOwner(clientId)) {
+            await this.unwatchAlive(clientId);
+        }
+    }
+
     private async unwatchAlive(subscriberId: string): Promise<void> {
         if (!this.watchedAlive.has(subscriberId)) {
             return;
@@ -348,7 +531,7 @@ class BleGatewayAdapter extends Adapter {
             }
         }
         if (removed) {
-            await this.unwatchAlive(subscriberId);
+            await this.maybeUnwatch(subscriberId);
             await this.updateInfoStates();
             await this.maybeStopScanning();
         }
@@ -375,7 +558,93 @@ class BleGatewayAdapter extends Adapter {
 
     // ---- advertisement matching & delivery --------------------------------
 
-    private handleAdvertisement(adv: Advertisement): void {
+    // A controller can drop off while in use: USB dongles re-enumerate after a
+    // firmware hang, often under a new hciX. noble cannot re-open a controller
+    // in-process, so if it stays lost the adapter restarts itself — and on
+    // start resolves the configured MAC to its current hciX again.
+    private handlePowerState(state: string): void {
+        if (state === 'poweredOn') {
+            this.wasPoweredOn = true;
+            if (this.powerLossTimer) {
+                clearTimeout(this.powerLossTimer);
+                this.powerLossTimer = null;
+                this.log.info(`Bluetooth controller hci${this.currentHci} is back`);
+            }
+            return;
+        }
+        if (!this.wasPoweredOn || this.powerLossTimer || this.stopping) {
+            return;
+        }
+        this.log.warn(
+            `Bluetooth controller hci${this.currentHci} is ${state} — restarting the adapter ` +
+                `if it is not back within ${POWER_LOSS_RESTART_MS / 1000} s`,
+        );
+        void this.setStateAsync('info.connection', false, true).catch(() => undefined);
+        this.powerLossTimer = setTimeout(() => {
+            this.powerLossTimer = null;
+            void this.restartForController(`controller hci${this.currentHci} is ${state}`);
+        }, POWER_LOSS_RESTART_MS);
+    }
+
+    private async restartForController(reason: string): Promise<void> {
+        if (this.stopping) {
+            return;
+        }
+        let moved = '';
+        try {
+            const hci = await resolveHciId(this.config.hciDevice);
+            if (hci >= 0 && hci !== this.currentHci) {
+                moved = ` (${String(this.config.hciDevice)} is now hci${hci})`;
+            }
+        } catch {
+            // only for the message
+        }
+        if (this.stopping) {
+            return;
+        }
+        this.log.error(`Bluetooth ${reason}${moved} — restarting the adapter to open it again`);
+        if (typeof this.terminate === 'function') {
+            this.terminate(`Bluetooth ${reason}`, EXIT_CODES.START_IMMEDIATELY_AFTER_STOP);
+        }
+    }
+
+    // Watchdog: the controller can refuse "scan enable" while noble believes it
+    // scans — then nothing arrives at all, for every subscriber. Restart the
+    // scan; if that does not help either (and devices were seen before, so the
+    // air is not simply empty), restart the adapter.
+    private checkScanAlive(): void {
+        const silent = this.scanner?.silentMs() ?? 0;
+        if (silent < SCAN_SILENCE_MS || this.stopping) {
+            return;
+        }
+        if (this.scanRestartedAt && this.sawAdvertisement) {
+            void this.restartForController(`scan delivers no advertisements for ${Math.round(silent / 1000)} s`);
+            return;
+        }
+        this.scanRestartedAt = Date.now();
+        const msg = `No BLE advertisement for ${Math.round(silent / 1000)} s — restarting the scan`;
+        if (this.scanSilenceWarned) {
+            this.log.debug(msg);
+        } else {
+            this.log.warn(msg);
+            this.scanSilenceWarned = true;
+        }
+        void this.scanner?.restart().catch(e => this.log.debug(`Scan restart failed: ${(e as Error).message}`));
+    }
+
+    private handleAdvertisement(adv: Advertisement, peripheral: any): void {
+        this.scanSilenceWarned = false;
+        this.sawAdvertisement = true;
+        this.scanRestartedAt = 0;
+        if (peripheral) {
+            this.peripherals.set(adv.address, { peripheral, lastSeen: Date.now() });
+            const waiters = this.discoveries.get(adv.address);
+            if (waiters) {
+                for (const waiter of [...waiters]) {
+                    waiter(peripheral);
+                }
+            }
+        }
         if (this.diag) {
             const prev = this.diag.get(adv.address);
             if (!prev || (adv.localName && !prev.localName)) {
@@ -465,6 +734,10 @@ class BleGatewayAdapter extends Adapter {
         if (!obj?.command) {
             return;
         }
+        if (GATT_COMMANDS.has(obj.command)) {
+            await this.handleGatt(obj);
+            return;
+        }
         switch (obj.command) {
             case 'subscribe':
                 await this.handleSubscribe(obj);
@@ -485,6 +758,7 @@ class BleGatewayAdapter extends Adapter {
                                 subscriptionId: s.subscriptionId,
                                 filter: s.filter,
                             })),
+                            connections: this.gatt.list(),
                         },
                         obj.callback,
                     );
@@ -506,6 +780,57 @@ class BleGatewayAdapter extends Adapter {
                 }
                 break;
             }
+        }
+    }
+
+    // ---- GATT proxy -------------------------------------------------------
+
+    private async handleGatt(obj: ioBroker.Message): Promise<void> {
+        const owner = this.subscriberIdFrom(obj.from);
+        const reply = (payload: Record<string, unknown>): void => {
+            if (obj.callback) {
+                this.sendTo(obj.from, obj.command, payload, obj.callback);
+            }
+        };
+        const msg = (obj.message || {}) as Record<string, unknown>;
+        try {
+            let result: Record<string, unknown> = { ok: true };
+            switch (obj.command) {
+                case 'gattConnect': {
+                    await this.openController();
+                    // Watch first, so a client dying mid-connect is still noticed.
+                    await this.watchAlive(owner);
+                    try {
+                        const r = await this.gatt.connect(owner, msg as unknown as GattConnectPayload);
+                        result = { ok: true, ...r };
+                    } finally {
+                        await this.maybeUnwatch(owner);
+                    }
+                    break;
+                }
+                case 'gattSubscribe':
+                    await this.gatt.subscribe(owner, msg as unknown as GattCharPayload);
+                    break;
+                case 'gattUnsubscribe':
+                    await this.gatt.unsubscribe(owner, msg as unknown as GattCharPayload);
+                    break;
+                case 'gattWrite':
+                    await this.gatt.write(owner, msg as unknown as GattWritePayload);
+                    break;
+                case 'gattRead':
+                    result = { ok: true, data: await this.gatt.read(owner, msg as unknown as GattCharPayload) };
+                    break;
+                case 'gattDisconnect':
+                    await this.gatt.disconnect(owner, (msg as unknown as GattDisconnectPayload).connectionId);
+                    await this.maybeUnwatch(owner);
+                    break;
+            }
+            reply(result);
+        } catch (e) {
+            const message = (e as Error).message || String(e);
+            // Offline devices are normal for clients — they decide what to log.
+            this.log.debug(`${obj.command} from ${owner} failed: ${message}`);
+            reply({ error: message });
         }
     }
 
@@ -536,32 +861,40 @@ class BleGatewayAdapter extends Adapter {
             );
         }
 
+        const minIntervalMs = Math.max(0, parseInt(msg.minIntervalMs as unknown as string, 10) || 0);
+        const key = `${subscriberId}::${msg.subscriptionId}`;
+        const previous = this.subscriptions.get(key);
+        let registered = false;
+
         try {
-            const hci = await resolveHciId(this.config.hciDevice);
-            if (hci < 0) {
-                const adapters = await readHciAdapters();
-                throw new Error(
-                    `Configured controller ${String(this.config.hciDevice)} not present. ` +
-                        `Available: ${adapters.map(a => `hci${a.id}=${a.address || '?'}`).join(', ') || 'none'}`,
-                );
-            }
+            const hci = await this.resolveController();
+            // Register before starting the scan, so an unsubscribe of another
+            // subscriber that runs in the meantime sees us and does not stop
+            // the scan we are about to rely on.
+            this.subscriptions.set(key, {
+                subscriberId,
+                subscriptionId: msg.subscriptionId,
+                filter,
+                minIntervalMs,
+                lastSent: new Map(),
+            });
+            registered = true;
             await this.ensureNoble(hci);
             await this.ensureScanning();
         } catch (e) {
+            if (registered) {
+                if (previous) {
+                    this.subscriptions.set(key, previous);
+                } else {
+                    this.subscriptions.delete(key);
+                }
+                await this.maybeStopScanning().catch(() => undefined);
+            }
             this.log.error(`subscribe failed for ${subscriberId}: ${(e as Error).message}`);
             reply({ error: (e as Error).message });
             return;
         }
 
-        const minIntervalMs = Math.max(0, parseInt(msg.minIntervalMs as unknown as string, 10) || 0);
-        const key = `${subscriberId}::${msg.subscriptionId}`;
-        this.subscriptions.set(key, {
-            subscriberId,
-            subscriptionId: msg.subscriptionId,
-            filter,
-            minIntervalMs,
-            lastSent: new Map(),
-        });
         await this.watchAlive(subscriberId);
         await this.setStateAsync('info.connection', true, true);
         await this.updateInfoStates();
@@ -575,15 +908,19 @@ class BleGatewayAdapter extends Adapter {
         if (msg.subscriptionId) {
             const key = `${subscriberId}::${msg.subscriptionId}`;
             this.subscriptions.delete(key);
-            if (!this.hasSubscriber(subscriberId)) {
-                await this.unwatchAlive(subscriberId);
-            }
+            await this.maybeUnwatch(subscriberId);
             await this.updateInfoStates();
             await this.maybeStopScanning();
             this.log.info(`Unsubscribed ${key}`);
         } else {
+            // "Everything of mine" — the client is shutting down, so its GATT
+            // connections go too.
             await this.removeSubscriptionsFor(subscriberId);
-            this.log.info(`Unsubscribed all of ${subscriberId}`);
+            const closed = await this.gatt.dropOwner(subscriberId);
+            await this.maybeUnwatch(subscriberId);
+            this.log.info(
+                `Unsubscribed all of ${subscriberId}${closed ? ` and closed ${closed} GATT connection(s)` : ''}`,
+            );
         }
         if (obj.callback) {
             this.sendTo(obj.from, obj.command, { ok: true }, obj.callback);
@@ -603,40 +940,34 @@ class BleGatewayAdapter extends Adapter {
             8000;
         const prefixes = parsePrefixes(typeof msg.namePrefixes === 'string' ? msg.namePrefixes : undefined);
 
-        const targetHci =
-            msg.hciDevice !== undefined && msg.hciDevice !== ''
-                ? await resolveHciId(msg.hciDevice)
-                : await resolveHciId(this.config.hciDevice);
-        if (targetHci < 0) {
-            reply({ error: `Controller ${String(msg.hciDevice ?? this.config.hciDevice)} not present on this host` });
-            return;
-        }
         if (this.diag) {
             reply({ error: 'A diagnostic scan is already running' });
             return;
         }
 
-        const startedForDiag = !this.scanner?.isScanning();
+        // Claim the slot before the first await, so a second scan request
+        // arriving meanwhile is rejected instead of running in parallel.
+        const diag = new Map<string, { address: string; localName: string; rssi: number }>();
+        this.diag = diag;
         try {
-            await this.ensureNoble(targetHci);
-            this.diag = new Map();
+            await this.openController(
+                msg.hciDevice !== undefined && msg.hciDevice !== '' ? msg.hciDevice : this.config.hciDevice,
+            );
             await this.ensureScanning();
             this.log.info(`Diagnostic scan on hci${this.currentHci} for ${ms} ms...`);
             await sleep(ms);
-            const list = [...this.diag.values()]
+            const list = [...diag.values()]
                 .filter(d => matchesPrefix(d.localName, prefixes))
                 .sort((a, b) => b.rssi - a.rssi);
             this.diag = null;
-            if (startedForDiag && this.subscriptions.size === 0) {
-                await this.scanner?.stop();
-            }
+            // Stops only if no subscriber needs the scan — also covers the
+            // last subscriber leaving while the diagnostic scan was running.
+            await this.maybeStopScanning();
             this.log.info(`Diagnostic scan finished: ${list.length} device(s)`);
             reply(list);
         } catch (e) {
             this.diag = null;
-            if (startedForDiag && this.subscriptions.size === 0) {
-                await this.scanner?.stop().catch(() => undefined);
-            }
+            await this.maybeStopScanning().catch(() => undefined);
             reply({ error: (e as Error).message });
         }
     }

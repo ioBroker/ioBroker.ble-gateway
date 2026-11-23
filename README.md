@@ -20,9 +20,19 @@ Other adapters subscribe with a packet filter (MAC, service UUID, name prefix, m
 - Last subscription gone → scanning stops (controller goes idle).
 - If a subscriber dies without unsubscribing, the gateway notices via its
   `system.adapter.<id>.alive` state and drops its subscriptions automatically.
+- If the controller drops off (USB dongles sometimes re-enumerate after a
+  firmware hang, often under a new `hciX`) and is not back within 15 s, or the
+  scan stops delivering advertisements even after a restart of the scan, the
+  gateway restarts itself and opens the controller by its MAC again. Clients
+  re-subscribe automatically.
 
-> **Phase 1** delivers passive advertisement packets only. An active GATT proxy
-> (connect/read/write/notify) is planned as a later, additive extension.
+- Adapters that need to **talk** to a device (connect, read, write, notify) use
+  the [GATT proxy](#gatt-proxy): the gateway holds the connection on their
+  behalf. Connects run one at a time. The scan pauses once per GATT session
+  (several connects in a row share one pause) and resumes 1.5 s after the last
+  connection closed — or after 15 s at the latest, so long-lived connections do
+  not starve the advertisement subscribers. Toggling the scan around every
+  single connect made cheap USB controllers (Realtek RTL8761B) crash.
 
 ## Configuration
 
@@ -80,12 +90,48 @@ Implement a `message` handler in your adapter. Binary fields arrive as **HEX str
 }
 ```
 
+## GATT proxy
+
+Every connection belongs to the instance that opened it; only that instance can
+use it, and the gateway closes all its connections when it stops (its `alive`
+state turns false) or sends `unsubscribe {}`. Binary values are **HEX strings**,
+UUIDs may be short (`fff1`) or long. Every command answers `{ ok: true, … }` or
+`{ error: '…' }`.
+
+| Command           | Payload                                                          | Answer                                              |
+|-------------------|------------------------------------------------------------------|-----------------------------------------------------|
+| `gattConnect`     | `{ address, discoverTimeoutMs?, connectTimeoutMs? }`             | `{ ok, connectionId, address, characteristics[] }`  |
+| `gattSubscribe`   | `{ connectionId, characteristic, service? }`                     | `{ ok }`                                            |
+| `gattUnsubscribe` | `{ connectionId, characteristic, service? }`                     | `{ ok }`                                            |
+| `gattWrite`       | `{ connectionId, characteristic, service?, data, withoutResponse? }` | `{ ok }`                                        |
+| `gattRead`        | `{ connectionId, characteristic, service? }`                     | `{ ok, data }`                                      |
+| `gattDisconnect`  | `{ connectionId }`                                               | `{ ok }`                                            |
+
+- `gattConnect` waits until the device advertises (`discoverTimeoutMs`, default
+  15 s), then connects (`connectTimeoutMs`, default 15 s) and discovers all
+  services. `characteristics` lists `{ serviceUuid, uuid, properties }`.
+  Allow about 45 s for the answer.
+- `service` is only needed when a characteristic UUID exists in several services.
+
+Pushed by the gateway to the owner (no answer expected):
+
+```js
+// notification of a subscribed characteristic
+'gattNotify'       { connectionId, service, characteristic, data /* HEX */ }
+// the link dropped without gattDisconnect (device out of range, ...)
+'gattDisconnected' { connectionId, address, reason }
+```
+
 ## Client helper
 
 `src/lib/ble-gateway-client.ts` is a small, dependency-free helper you can **copy
 into your own adapter**. It handles subscribe/unsubscribe, converts HEX back to
 `Buffer`, and automatically re-subscribes if the gateway restarts (it watches
-`ble-gateway.0.info.connection`).
+`system.adapter.ble-gateway.0.alive`, so `stateChange` must be forwarded to
+`handleStateChange()`). If the gateway is not running yet, subscriptions are sent
+as soon as it starts; open GATT connections are reported via `onDisconnect` when
+it stops. An optional third constructor argument `onConnectionChange(connected)`
+tells you when the gateway confirmed a subscription or went away.
 
 ```ts
 import { BleGatewayClient } from './lib/ble-gateway-client';
@@ -110,6 +156,19 @@ class MyAdapter extends Adapter {
 }
 ```
 
+GATT through the helper:
+
+```ts
+const conn = await this.ble.gattConnect('aa:bb:cc:dd:ee:ff');
+try {
+    await conn.subscribe('fff1', data => this.log.info(`notify ${data.toString('hex')}`));
+    await conn.write('fff2', Buffer.from('0102', 'hex'));
+    const value = await conn.read('2a19');
+} finally {
+    await conn.disconnect();
+}
+```
+
 ## States
 
 | State                | Type    | Description                              |
@@ -117,6 +176,7 @@ class MyAdapter extends Adapter {
 | `info.connection`    | boolean | Controller open and scanning             |
 | `info.subscribers`   | number  | Number of subscribed adapters            |
 | `info.subscriptions` | string  | JSON list of active subscriptions        |
+| `info.connections`   | number  | Open GATT connections                    |
 
 ## Requirements
 
@@ -131,6 +191,9 @@ class MyAdapter extends Adapter {
 -->
 ### **WORK IN PROGRESS**
 * (@GermanBluefox) Initial version — passive advertisement gateway with message-based subscribe/unsubscribe.
+* (@GermanBluefox) GATT proxy: other adapters can connect, read, write and receive notifications through the gateway.
+* (@GermanBluefox) Fixed: the configured controller MAC was sometimes not found (HCI sockets were closed twice), and concurrent subscribers could start the scan twice.
+* (@GermanBluefox) The gateway recovers by itself when the controller drops off or the scan stops delivering advertisements.
 * (GermanBluefox) Replaced the telegram project context in the Copilot instructions and fixed the duplicate-issue check of the Copilot template workflow (#51)
 
 ## License

@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "ble-gateway",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "news": {
+      "0.1.2": {
+        "en": "Updated packages",
+        "de": "Neue Pakete",
+        "ru": "Обновленные пакеты",
+        "pt": "Pacotes novos",
+        "nl": "Bijgewerkte pakketten",
+        "fr": "Packages mis à jour",
+        "it": "Pacchi nuovi",
+        "es": "Paquetes nuevos",
+        "pl": "Zaktualizowane pakiety",
+        "uk": "Оновлені пакети",
+        "zh-cn": "更新的软件包"
+      },
       "0.1.1": {
         "en": "Corrected the translations of the 0.1.0 release notes; releases are published to npm with trusted publishing now.",
         "de": "Die Übersetzungen der Versionshinweise zu 0.1.0 wurden korrigiert; Releases werden jetzt per Trusted Publishing auf npm veröffentlicht.",

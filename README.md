@@ -182,7 +182,7 @@ try {
 ## Requirements
 
 - Linux with BlueZ (`apt install bluez libbluetooth-dev`) or macOS.
-- Node.js ≥ 20.
+- Node.js ≥ 22.19.0.
 - The adapter must be allowed to access the HCI socket (typically run as root or with `setcap`).
 
 ## Changelog

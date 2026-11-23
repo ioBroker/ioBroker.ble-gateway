@@ -203,6 +203,7 @@ class BleScanner {
                 address: addr,
                 addressType: p.addressType || 'unknown',
                 rssi: typeof p.rssi === 'number' ? p.rssi : 0,
+                connectable: typeof p.connectable === 'boolean' ? p.connectable : undefined,
                 localName: a.localName || undefined,
                 txPowerLevel: typeof a.txPowerLevel === 'number' ? a.txPowerLevel : undefined,
                 serviceUuids: Array.isArray(a.serviceUuids) && a.serviceUuids.length ? a.serviceUuids : undefined,

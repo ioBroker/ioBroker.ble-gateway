@@ -476,6 +476,7 @@ class BleGatewayClient {
             addressType: raw.addressType,
             rssi: raw.rssi,
             ts: raw.ts,
+            connectable: raw.connectable,
             localName: raw.localName,
             txPowerLevel: raw.txPowerLevel,
             serviceUuids: raw.serviceUuids,

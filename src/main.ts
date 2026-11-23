@@ -681,7 +681,12 @@ class BleGatewayAdapter extends Adapter {
             }
         }
         if (f.serviceUuids && f.serviceUuids.length) {
-            const advU = (adv.serviceUuids || []).map(normalizeUuid);
+            // Like noble's own scan filter: advertised service UUIDs and the
+            // UUIDs of service data both count (BTHome, Xiaomi, ... only send
+            // service data).
+            const advU = [...(adv.serviceUuids || []), ...(adv.serviceData || []).map(sd => sd.uuid)].map(
+                normalizeUuid,
+            );
             const want = f.serviceUuids.map(normalizeUuid);
             if (!want.some(w => advU.includes(w))) {
                 return false;
@@ -709,6 +714,9 @@ class BleGatewayAdapter extends Adapter {
             rssi: adv.rssi,
             ts,
         };
+        if (adv.connectable !== undefined) {
+            packet.connectable = adv.connectable;
+        }
         if (adv.localName) {
             packet.localName = adv.localName;
         }

@@ -69,6 +69,8 @@ export interface BleGatewayPacket {
     addressType: string;
     rssi: number;
     ts: number;
+    /** Whether the device accepts connections (advertising type). */
+    connectable?: boolean;
     localName?: string;
     txPowerLevel?: number;
     serviceUuids?: string[];
@@ -84,6 +86,7 @@ interface RawPacket {
     addressType: string;
     rssi: number;
     ts: number;
+    connectable?: boolean;
     localName?: string;
     txPowerLevel?: number;
     serviceUuids?: string[];
@@ -610,6 +613,7 @@ export class BleGatewayClient {
             addressType: raw.addressType,
             rssi: raw.rssi,
             ts: raw.ts,
+            connectable: raw.connectable,
             localName: raw.localName,
             txPowerLevel: raw.txPowerLevel,
             serviceUuids: raw.serviceUuids,

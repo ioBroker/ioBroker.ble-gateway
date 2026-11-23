@@ -51,7 +51,7 @@ sendTo('ble-gateway.0', 'subscribe', {
     subscriptionId: 'sensors',          // unique per subscriber; re-using replaces
     filter: {
         macs: ['aa:bb:cc:dd:ee:ff'],    // lowercased MACs (most common)
-        serviceUuids: ['fff0'],         // any of these (short or long form)
+        serviceUuids: ['fff0'],         // any of these, advertised or as service data (short or long form)
         namePrefixes: ['Govee'],        // localName startsWith (case-insensitive)
         manufacturerId: 0x004c          // company id (first 2 bytes of mfg data, LE)
     },
@@ -82,6 +82,7 @@ Implement a `message` handler in your adapter. Binary fields arrive as **HEX str
     addressType: 'public',
     rssi: -67,
     ts: 1717000000000,
+    connectable: true,
     localName: 'Govee_1234',
     txPowerLevel: -59,
     serviceUuids: ['fff0'],
@@ -194,6 +195,7 @@ try {
 * (@GermanBluefox) GATT proxy: other adapters can connect, read, write and receive notifications through the gateway.
 * (@GermanBluefox) Fixed: the configured controller MAC was sometimes not found (HCI sockets were closed twice), and concurrent subscribers could start the scan twice.
 * (@GermanBluefox) The gateway recovers by itself when the controller drops off or the scan stops delivering advertisements.
+* (@GermanBluefox) Packets carry the `connectable` flag, and the `serviceUuids` filter also matches service data UUIDs (needed by the ble adapter).
 * (GermanBluefox) Replaced the telegram project context in the Copilot instructions and fixed the duplicate-issue check of the Copilot template workflow (#51)
 
 ## License

@@ -11,6 +11,8 @@ export interface BleGatewayPacket {
     addressType: string;
     rssi: number;
     ts: number;
+    /** Whether the device accepts connections (advertising type). */
+    connectable?: boolean;
     localName?: string;
     txPowerLevel?: number;
     serviceUuids?: string[];

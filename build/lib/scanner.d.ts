@@ -9,6 +9,7 @@ export interface Advertisement {
     address: string;
     addressType: string;
     rssi: number;
+    connectable?: boolean;
     localName?: string;
     txPowerLevel?: number;
     serviceUuids?: string[];

@@ -39,6 +39,8 @@ export interface BlePacket {
     rssi: number;
     /** Date.now() when the gateway received the advertisement. */
     ts: number;
+    /** Whether the device accepts connections (advertising type). */
+    connectable?: boolean;
     localName?: string;
     txPowerLevel?: number;
     serviceUuids?: string[];

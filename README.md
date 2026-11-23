@@ -190,6 +190,9 @@ try {
    Placeholder for the next version (at the beginning of the line):
    ### **WORK IN PROGRESS**
 -->
+### **WORK IN PROGRESS**
+* (@GermanBluefox) Corrected the translations of the 0.1.0 release notes; releases are published to npm with trusted publishing now.
+
 ### 0.1.0 (2026-11-23)
 * (@GermanBluefox) Initial version — passive advertisement gateway with message-based subscribe/unsubscribe.
 * (@GermanBluefox) GATT proxy: other adapters can connect, read, write and receive notifications through the gateway.

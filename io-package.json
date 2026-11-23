@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "ble-gateway",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "news": {
+      "0.1.1": {
+        "en": "Corrected the translations of the 0.1.0 release notes; releases are published to npm with trusted publishing now.",
+        "de": "Die Übersetzungen der Versionshinweise zu 0.1.0 wurden korrigiert; Releases werden jetzt per Trusted Publishing auf npm veröffentlicht.",
+        "ru": "Исправлены переводы примечаний к версии 0.1.0; теперь релизы публикуются в npm с доверенной публикацией.",
+        "pt": "As traduções das notas da versão 0.1.0 foram corrigidas; as versões agora são publicadas no npm com trusted publishing.",
+        "nl": "De vertalingen van de releasenotes van 0.1.0 zijn gecorrigeerd; de releases worden nu gepubliceerd op npm bij Trusted Publishing.",
+        "fr": "Les traductions des notes de version 0.1.0 ont été corrigées ; les versions sont désormais publiées sur npm avec le trusted publishing.",
+        "it": "Sono state corrette le traduzioni delle note di rilascio 0.1.0; ora le versioni vengono pubblicate su npm con il trusted publishing.",
+        "es": "Se corrigieron las traducciones de las notas de la versión 0.1.0; las versiones ahora se publican en npm con Trusted Publishing.",
+        "pl": "Poprawiono tłumaczenia informacji o wersji 0.1.0; wydania są teraz publikowane do npm z zaufanym publikowaniem.",
+        "uk": "Виправлено переклади приміток до випуску 0.1.0; випуски тепер публікуються в npm з довіреною публікацією.",
+        "zh-cn": "更正了 0.1.0 发行说明的翻译；版本现已通过可信发布到 npm。"
+      },
       "0.1.0": {
         "en": "Initial version — passive advertisement gateway with message-based subscribe/unsubscribe.\nGATT proxy: other adapters can connect, read, write and receive notifications through the gateway.\nFixed: the configured controller MAC was sometimes not found (HCI sockets were closed twice), and concurrent subscribers could start the scan twice.\nThe gateway recovers by itself when the controller drops off or the scan stops delivering advertisements.\nPackets carry the `connectable` flag, and the `serviceUuids` filter also matches service data UUIDs (needed by the ble adapter).\nReplaced the telegram project context in the Copilot instructions and fixed the duplicate-issue check of the Copilot template workflow (#51)",
         "de": "Erste Version: passives Gateway für BLE-Advertisements mit An- und Abmelden per Nachricht.\nGATT-Proxy: Andere Adapter können sich über das Gateway verbinden, lesen, schreiben und Benachrichtigungen empfangen.\nBehoben: Die konfigurierte Controller-MAC wurde manchmal nicht gefunden (HCI-Sockets wurden zweimal geschlossen), und gleichzeitige Abonnenten konnten den Scan zweimal starten.\nDas Gateway erholt sich selbst, wenn der Controller wegfällt oder der Scan keine Advertisements mehr liefert.\nPakete enthalten das Flag `connectable`, und der Filter `serviceUuids` passt auch auf UUIDs von Service-Daten (benötigt vom ble-Adapter).\nTelegram-Projektkontext in den Copilot-Anweisungen ersetzt und die Duplikatprüfung im Copilot-Template-Workflow behoben (#51)",
